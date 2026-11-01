@@ -415,6 +415,13 @@ struct Row: View {
     }
 }
 
+/// Bleu en dessous de 70 %, orange entre 70 et 90, rouge au-delà.
+func planLimitColor(_ percent: Double) -> Color {
+    if percent >= 90 { return .red }
+    if percent >= 70 { return .orange }
+    return .accentColor
+}
+
 struct PlanLimitRow: View {
     let label: String
     let percent: Double
@@ -434,15 +441,87 @@ struct PlanLimitRow: View {
                 ZStack(alignment: .leading) {
                     RoundedRectangle(cornerRadius: 3).fill(Color.primary.opacity(0.08))
                     RoundedRectangle(cornerRadius: 3)
-                        .fill(percent >= 90 ? Color.red : Color.accentColor)
+                        .fill(planLimitColor(percent))
                         .frame(width: max(2, geo.size.width * CGFloat(min(max(percent, 0), 100) / 100)))
                 }
             }
-            .frame(height: 6)
+            .frame(height: 7)
             if let detail {
                 Text(detail).font(.caption2).foregroundStyle(.secondary)
             }
         }
+    }
+}
+
+struct InfoBanner: View {
+    let text: String
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 7) {
+            Image(systemName: "info.circle")
+                .font(.system(size: 11))
+                .foregroundStyle(Color.accentColor)
+            Text(text)
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+        }
+        .padding(9)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(RoundedRectangle(cornerRadius: 8).fill(Color.accentColor.opacity(0.08)))
+    }
+}
+
+/// Bascule à deux segments façon contrôle segmenté macOS (fond clair,
+/// pastille blanche avec ombre portée sur le segment sélectionné).
+struct SegmentedToggle: View {
+    @Binding var selection: String
+    let options: [(key: String, label: String)]
+
+    var body: some View {
+        HStack(spacing: 2) {
+            ForEach(options, id: \.key) { option in
+                let isSelected = option.key == selection
+                Button {
+                    selection = option.key
+                } label: {
+                    Text(option.label)
+                        .font(.system(size: 12, weight: .medium))
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 5)
+                }
+                .buttonStyle(.plain)
+                .background(
+                    RoundedRectangle(cornerRadius: 6)
+                        .fill(isSelected ? Color(nsColor: .controlBackgroundColor) : .clear)
+                        .shadow(color: .black.opacity(isSelected ? 0.18 : 0), radius: 2, y: 1)
+                )
+                .foregroundStyle(isSelected ? Color.primary : Color.secondary)
+            }
+        }
+        .padding(2)
+        .background(RoundedRectangle(cornerRadius: 8).fill(Color.primary.opacity(0.055)))
+    }
+}
+
+/// Switch façon macOS pour remplacer le Toggle natif dans le pied du popover.
+struct SwitchView: View {
+    let isOn: Bool
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            RoundedRectangle(cornerRadius: 10)
+                .fill(isOn ? Color.green : Color.primary.opacity(0.12))
+                .frame(width: 34, height: 20)
+                .overlay(
+                    Circle()
+                        .fill(.white)
+                        .shadow(color: .black.opacity(0.3), radius: 1, y: 1)
+                        .padding(2)
+                        .frame(maxWidth: .infinity, alignment: isOn ? .trailing : .leading)
+                )
+        }
+        .buttonStyle(.plain)
     }
 }
 
@@ -460,12 +539,17 @@ struct InfoSection<Content: View>: View {
 
 struct UsageView: View {
     @ObservedObject var store: UsageStore
+    @AppStorage("ct.popoverMode") private var mode: String = "percent"
 
     var body: some View {
         let s = store.summary
         VStack(alignment: .leading, spacing: 12) {
             HStack {
-                Text("Tokens Claude Code").font(.headline)
+                RoundedRectangle(cornerRadius: 6)
+                    .fill(LinearGradient(colors: [.accentColor, .accentColor.opacity(0.6)], startPoint: .topLeading, endPoint: .bottomTrailing))
+                    .frame(width: 20, height: 20)
+                    .overlay(Text("✦").font(.system(size: 11)).foregroundStyle(.white))
+                Text("Claude Tokens").font(.headline)
                 Spacer()
                 Button {
                     store.refresh()
@@ -482,59 +566,61 @@ struct UsageView: View {
                     .font(.callout)
                     .foregroundStyle(.secondary)
             } else {
-                InfoSection(title: "Limites du plan (estimation)") {
-                    PlanLimitRow(
-                        label: "5 dernières heures",
-                        percent: s.fiveHourPercent,
-                        detail: "Fenêtre glissante, pas un vrai compteur Anthropic"
-                    )
-                    PlanLimitRow(
-                        label: "Cette semaine",
-                        percent: s.weekPercent,
-                        detail: "Réinitialisation \(Fmt.weekdayTime.string(from: s.weekResetsAt))"
-                    )
-                    Text("Estimation locale (non officielle), calibrée le \(PlanBudget.calibratedAt).")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                }
+                SegmentedToggle(selection: $mode, options: [("percent", "% du plan"), ("tokens", "Tokens")])
 
-                Divider()
-
-                HStack(spacing: 8) {
-                    StatTile(title: "Aujourd'hui", value: s.today.total)
-                    StatTile(title: "7 jours", value: s.week.total)
-                    StatTile(title: "30 jours", value: s.month.total)
-                }
-
-                DailyBars(days: s.last7Days)
-
-                InfoSection(title: "Aujourd'hui, par type") {
-                    Row(label: "Entrée", value: s.today.input)
-                    Row(label: "Sortie", value: s.today.output)
-                    Row(label: "Écriture cache", value: s.today.cacheWrite)
-                    Row(label: "Lecture cache", value: s.today.cacheRead)
-                }
-
-                if !s.todayByModel.isEmpty {
-                    InfoSection(title: "Aujourd'hui, par modèle") {
-                        ForEach(s.todayByModel) { Row(label: $0.name, value: $0.usage.total) }
+                if mode == "percent" {
+                    InfoSection(title: "Limites du plan (estimation)") {
+                        PlanLimitRow(
+                            label: "5 dernières heures",
+                            percent: s.fiveHourPercent,
+                            detail: "Fenêtre glissante, pas un vrai compteur Anthropic"
+                        )
+                        PlanLimitRow(
+                            label: "Cette semaine",
+                            percent: s.weekPercent,
+                            detail: "Réinitialisation \(Fmt.weekdayTime.string(from: s.weekResetsAt))"
+                        )
                     }
-                }
+                    InfoBanner(text: "Estimation locale, non officielle — calibrée le \(PlanBudget.calibratedAt).")
+                } else {
+                    HStack(spacing: 8) {
+                        StatTile(title: "Aujourd'hui", value: s.today.total)
+                        StatTile(title: "7 jours", value: s.week.total)
+                        StatTile(title: "30 jours", value: s.month.total)
+                    }
 
-                if !s.monthByProject.isEmpty {
-                    InfoSection(title: "30 jours, top projets") {
-                        ForEach(s.monthByProject) { Row(label: $0.name, value: $0.usage.total) }
+                    DailyBars(days: s.last7Days)
+
+                    InfoSection(title: "Aujourd'hui, par type") {
+                        Row(label: "Entrée", value: s.today.input)
+                        Row(label: "Sortie", value: s.today.output)
+                        Row(label: "Écriture cache", value: s.today.cacheWrite)
+                        Row(label: "Lecture cache", value: s.today.cacheRead)
+                    }
+
+                    if !s.todayByModel.isEmpty {
+                        InfoSection(title: "Aujourd'hui, par modèle") {
+                            ForEach(s.todayByModel) { Row(label: $0.name, value: $0.usage.total) }
+                        }
+                    }
+
+                    if !s.monthByProject.isEmpty {
+                        InfoSection(title: "30 jours, top projets") {
+                            ForEach(s.monthByProject) { Row(label: $0.name, value: $0.usage.total) }
+                        }
                     }
                 }
             }
 
             Divider()
 
-            Toggle("Lancer à l'ouverture de session", isOn: Binding(
-                get: { store.launchAtLogin },
-                set: { store.setLaunchAtLogin($0) }
-            ))
-                .font(.callout)
+            HStack {
+                Text("Lancer à l'ouverture de session").font(.callout)
+                Spacer()
+                SwitchView(isOn: store.launchAtLogin) {
+                    store.setLaunchAtLogin(!store.launchAtLogin)
+                }
+            }
 
             HStack {
                 if let t = store.lastUpdate {
